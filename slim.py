@@ -81,7 +81,7 @@ class SlimBN2d(nn.Module):
 
 
 class DepthSlimTrainStrategy(object):
-    def __init__(self, necessary, option_num, option_block_num):
+    def __init__(self, necessary, option_num, option_block_num, option_prob=1):
         N = int(math.pow(2, option_block_num))
         if necessary == 'sandwich':
             self.necessary = {0, N-1}
@@ -92,10 +92,10 @@ class DepthSlimTrainStrategy(object):
         else:
             raise ValueError
         self.option_block_num = option_block_num
+        self.option_prob = option_prob
 
         assert(option_num <= N - len(self.necessary))
         self.option_set = {x for x in range(N)} - self.necessary
-        print('option_set', self.option_set)
         self.option_num = option_num
 
     def _get_binary_code_tuple(self, code):
@@ -115,6 +115,9 @@ class DepthSlimTrainStrategy(object):
         self.option = random.sample(self.option_set, self.option_num)
 
     def get_option(self):
+        prob = random.uniform(0, 1)
+        if prob > self.option_prob:
+            return []
         self._option_step()
         result = []
         for item in self.option:
@@ -149,7 +152,6 @@ class DepthSlimStage(nn.Module):
 
     def multi_transform(self, x):
         def binary_code_exe(func, code, x):
-            print(code)
             assert(len(func) == len(code))
             for i in range(len(code)):
                 if i == 0:
@@ -166,7 +168,7 @@ class DepthSlimStage(nn.Module):
             transform_x.append(binary_code_exe(self.fats, item, x))
         return transform_x
 
-    def postrior_bn(self):
+    def posterior_bn(self):
         for m in self.modules():
             if isinstance(m, SlimBN2d):
                 if m.bn_type == SlimBNType.RUN_NORM_BN:
@@ -191,3 +193,14 @@ class DepthSlimStage(nn.Module):
                'muscle: (\n{}\n)\n'.format('\n'.join([str(x) for x in self.muscles])) +
                'joint_end: {}\n'.format(str(self.joints[1])) +
                ')')
+
+
+class IDepthSlimModel(object):
+    def train_mode(self):
+        raise NotImplementedError
+
+    def posterior_bn_mode(self):
+        raise NotImplementedError
+
+    def eval_mode(self):
+        raise NotImplementedError
