@@ -3,6 +3,7 @@ import math
 import random
 import torch
 import torch.nn as nn
+import xxx  # you own distributed module
 
 
 class SlimBlockType(Enum):
@@ -80,8 +81,49 @@ class SlimBN2d(nn.Module):
         return 'SlimBN2d({}, bn_type={})'.format(self.bn, SlimBNType.value2name(self.bn_type))
 
 
+class IDepthSlimTrainProbGenerator(object):
+    def _valid_check(self, x):
+        return x >= 0 and x <= 1
+
+    def _step(self):
+        raise NotImplementedError
+
+    def step(self):
+        x = self._step()
+        if self._valid_check(x):
+            return x
+        else:
+            raise ValueError('invalid prob value: {}'.format(x))
+
+
+class ConstantProbGenerator(IDepthSlimTrainProbGenerator):
+    def __init__(self, init_val):
+        self.init_val = init_val
+
+    # override
+    def _step(self):
+        return self.init_val
+
+
+class EGreedyProbGenerator(IDepthSlimTrainProbGenerator):
+    def __init__(self, min_val=0, max_val=1, decay_coeff=50):
+        assert(max_val > min_val)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.decay_coeff = decay_coeff
+        self.count = 0
+
+    def _scale(self, x):
+        return (self.max_val - self.min_val) * x + self.min_val
+
+    def _step(self):
+        self.count += 1
+        x = 1 * math.exp(-1. * self.count / self.decay_coeff)
+        return 1 - self._scale(x)
+
+
 class DepthSlimTrainStrategy(object):
-    def __init__(self, necessary, option_num, option_block_num, option_prob=1):
+    def __init__(self, necessary, option_num, option_block_num, option_prob_func=ConstantProbGenerator(1.0)):
         N = int(math.pow(2, option_block_num))
         if necessary == 'sandwich':
             self.necessary = {0, N-1}
@@ -92,7 +134,7 @@ class DepthSlimTrainStrategy(object):
         else:
             raise ValueError
         self.option_block_num = option_block_num
-        self.option_prob = option_prob
+        self.option_prob_func = option_prob_func
 
         assert(option_num <= N - len(self.necessary))
         self.option_set = {x for x in range(N)} - self.necessary
@@ -116,7 +158,10 @@ class DepthSlimTrainStrategy(object):
 
     def get_option(self):
         prob = random.uniform(0, 1)
-        if prob > self.option_prob:
+        prob = torch.Tensor([prob])
+        xxx.broadcast(prob, 0)
+        option_prob = self.option_prob_func.step()
+        if prob.item() > option_prob:
             return []
         self._option_step()
         result = []
@@ -160,12 +205,12 @@ class DepthSlimStage(nn.Module):
                     x = func[i](x)
             return x
 
-        transform_x = []
+        transform_x = {}
         necessary = self.train_strategy.get_necessary()
         option = self.train_strategy.get_option()
         execute = necessary + option
         for item in execute:
-            transform_x.append(binary_code_exe(self.fats, item, x))
+            transform_x['-'.join([str(t) for t in item])] = binary_code_exe(self.fats, item, x)
         return transform_x
 
     def posterior_bn(self):
@@ -180,9 +225,9 @@ class DepthSlimStage(nn.Module):
     def train_forward(self, x):
         x = self.begin(x)
         transform_x = self.multi_transform(x)
-        result_x = []
-        for x in transform_x:
-            result_x.append(self.end(x))
+        result_x = {}
+        for k, x in transform_x.items():
+            result_x[k] = self.end(x)
 
         return result_x
 
