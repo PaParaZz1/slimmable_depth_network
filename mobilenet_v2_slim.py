@@ -5,11 +5,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
 
-from somewhere import SyncBatchNorm2d, syncbnVarMode_t
+from linklink.nn import SyncBatchNorm2d, syncbnVarMode_t
 import slim as S
 from functools import partial
 
-__all__ = ['mobilenetv2']
+__all__ = ['mobilenetv2_slim']
 
 
 def _make_divisible(v, divisor, min_value=None):
@@ -68,14 +68,15 @@ class LinearBottleneck(nn.Module):
         return out
 
 
-class MobileNet2(nn.Module, S.IDepthSlimModel):
+class MobileNet2Slim(nn.Module, S.IDepthSlimModel):
     """MobileNet2 implementation.
     """
 
     #def __init__(self, scale=1.0, input_size=224, t=2, in_channels=3, num_classes=1000, activation=nn.ReLU6,  bn_group_size=1, bn_group=None, bn_sync_stats=False):
     def __init__(self, scale=1.0, input_size=224, t=6, in_channels=3, num_classes=1000, activation=nn.ReLU,
                  bn_group_size=1, bn_group=None, bn_var_mode=syncbnVarMode_t.L2, bn_sync_stats=False,
-                 use_sync_bn=True, block_num_list=None, use_slim_bn=False, slim_mode=False):
+                 use_sync_bn=False, block_num_list=None, slim_num_list=None, use_slim_bn=True, slim_mode=False,
+                 slim_prob_generator=None, slim_necessary_strategy=None, slim_layer_num=0, slim_option_num=0):
         """
         MobileNet2 constructor.
         :param in_channels: (int, optional): number of channels in the input tensor.
@@ -88,7 +89,7 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
         :param activation:
         """
 
-        super(MobileNet2, self).__init__()
+        super(MobileNet2Slim, self).__init__()
 
         global BN
         def BNFunc(*args, **kwargs):
@@ -118,7 +119,8 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
         self.s = [2, 1, 2, 2, 2, 1, 2, 1]
         self.conv1 = nn.Conv2d(in_channels, self.c[0], kernel_size=3, bias=False, stride=self.s[0], padding=1)
         self.bn1 = BN(self.c[0]) # nn.BatchNorm2d(self.c[0])
-        self.bottlenecks = self._make_bottlenecks_stage() if slim_mode else self._make_bottlenecks()
+        assert(slim_prob_generator is not None)
+        self.bottlenecks = self._make_bottlenecks_stage(slim_necessary_strategy, slim_option_num, slim_layer_num, slim_prob_generator)
         self.slim_mode = slim_mode
 
         # Last convolution has 1280 output channels for scale <= 1
@@ -185,7 +187,7 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
 
         return nn.Sequential(modules)
 
-    def _make_bottlenecks_stage(self, slim_num=3):
+    def _make_bottlenecks_stage(self, slim_necessary_strategy, slim_option_num, slim_layer_num, slim_prob_generator, slim_num=3):
         modules = OrderedDict()
         stage_name = "Bottlenecks"
 
@@ -236,7 +238,15 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
             S.SlimBlock(end, S.SlimBlockType.JOINT)
         ]
 
-        strategy = S.DepthSlimTrainStrategy(necessary='min', option_num=1, option_block_num=1, option_prob=0.5)
+        if slim_prob_generator.type == 'constant':
+            option_prob_func = S.ConstantProbGenerator(**slim_prob_generator['kwargs'])
+        elif slim_prob_generator.type == 'e_greedy':
+            option_prob_func = S.EGreedyProbGenerator(**slim_prob_generator['kwargs'])
+        else:
+            raise ValueError
+
+        strategy = S.DepthSlimTrainStrategy(necessary=slim_necessary_strategy, option_num=slim_option_num,
+                                            option_block_num=slim_layer_num, option_prob_func=option_prob_func)
         stage = S.DepthSlimStage(blocks, strategy)
         return stage
 
@@ -265,9 +275,9 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
             if isinstance(x, torch.Tensor):
                 return self._post_forward(x)
             else:
-                x_result = []
-                for item in x:
-                    x_result.append(self._post_forward(item))
+                x_result = {}
+                for k, item in x.items():
+                    x_result[k] = self._post_forward(item)
                 return x_result
         else:
             x = self.bottlenecks(x)
@@ -278,10 +288,12 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
     def train_mode(self):
         assert(self.slim_mode is True)
         self.bottlenecks_func = self.bottlenecks.train_forward
+        self.train()
 
     # override
     def eval_mode(self):
         self.bottlenecks_func = self.bottlenecks.forward
+        self.eval()
 
     # override
     def posterior_bn_mode(self):
@@ -294,23 +306,23 @@ class MobileNet2(nn.Module, S.IDepthSlimModel):
                 m.eval()
 
 
-def mobilenetv2(pretrained=False, **kwargs):
+def mobilenetv2_slim(pretrained=False, **kwargs):
 
-    model = MobileNet2(**kwargs)
+    model = MobileNet2Slim(**kwargs)
     if pretrained:
         raise NotImplementedError('pretrained weights unavailable')
     return model
 
 
 def test():
-    net = mobilenetv2(use_slim_bn=True, slim_mode=True).cuda()
+    net = mobilenetv2_slim(use_slim_bn=True, slim_mode=True).cuda()
     net.train_mode()
     inputs = torch.randn(2, 3, 224, 224).cuda()
     for i in range(5):
         print('loop {}'.format(i))
         output = net(inputs)
-        for item in output:
-            print(item.shape)
+        for k, item in output.items():
+            print('k:{}, v_shape:{}'.format(k, item.shape))
 
     net.posterior_bn_mode()
     output = net(inputs)
