@@ -119,7 +119,7 @@ class EGreedyProbGenerator(IDepthSlimTrainProbGenerator):
     def _step(self):
         self.count += 1
         x = 1 * math.exp(-1. * self.count / self.decay_coeff)
-        return 1 - self._scale(x)
+        return self._scale(x)
 
 
 class DepthSlimTrainStrategy(object):
@@ -160,8 +160,8 @@ class DepthSlimTrainStrategy(object):
         prob = random.uniform(0, 1)
         prob = torch.Tensor([prob])
         xxx.broadcast(prob, 0)
-        option_prob = self.option_prob_func.step()
-        if prob.item() > option_prob:
+        self.option_prob = self.option_prob_func.step()
+        if prob.item() > self.option_prob:
             return []
         self._option_step()
         result = []

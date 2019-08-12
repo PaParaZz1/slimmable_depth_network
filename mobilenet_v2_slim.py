@@ -98,7 +98,7 @@ class MobileNet2Slim(nn.Module, S.IDepthSlimModel):
         if use_sync_bn:
             BN = BNFunc
         elif use_slim_bn:
-            BN = partial(S.SlimBN2d, bn_type=S.SlimBNType.NORMAL_BN)
+            BN = S.SlimBN2d
         else:
             BN = nn.BatchNorm2d
 
@@ -247,6 +247,7 @@ class MobileNet2Slim(nn.Module, S.IDepthSlimModel):
 
         strategy = S.DepthSlimTrainStrategy(necessary=slim_necessary_strategy, option_num=slim_option_num,
                                             option_block_num=slim_layer_num, option_prob_func=option_prob_func)
+        self.strategy = strategy
         stage = S.DepthSlimStage(blocks, strategy)
         return stage
 
